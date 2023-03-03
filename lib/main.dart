@@ -2,9 +2,17 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import './signaling.dart';
+import './screen_select_dialog.dart';
+import 'dart:core';
+
+import 'package:flutter/foundation.dart';
+
+import 'dart:io';
+
+import 'package:path_provider/path_provider.dart';
 
 Future<void> main() async {
-  WidgetsFlutterBinding.ensureInitialized();
+  //WidgetsFlutterBinding.ensureInitialized();
   //await Firebase.initializeApp();
   runApp(MyApp());
 }
@@ -31,146 +39,226 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  Signaling signaling = Signaling();
-  RTCVideoRenderer _localRenderer = RTCVideoRenderer();
-  RTCVideoRenderer _remoteRenderer = RTCVideoRenderer();
-  String? roomId;
-  TextEditingController textEditingController = TextEditingController(text: '');
+  MediaStream? _localStream;
+  final _localRenderer = RTCVideoRenderer();
+  bool _inCalling = false;
+  bool _isTorchOn = false;
+  MediaRecorder? _mediaRecorder;
+  bool get _isRec => _mediaRecorder != null;
+
+  List<MediaDeviceInfo>? _mediaDevicesList;
 
   @override
   void initState() {
-    //_localRenderer.initialize();
-    _remoteRenderer.initialize();
-
-    // signaling.onAddRemoteStream = ((stream) {
-    //   _remoteRenderer.srcObject = stream;
-    //   setState(() {});
-    // });
-
     super.initState();
-
     initRenderers();
-  }
-
-  initRenderers() async {
-    await _localRenderer.initialize();
+    navigator.mediaDevices.ondevicechange = (event) async {
+      print('++++++ ondevicechange ++++++');
+      _mediaDevicesList = await navigator.mediaDevices.enumerateDevices();
+    };
   }
 
   @override
-  void dispose() {
+  void deactivate() {
+    super.deactivate();
+    if (_inCalling) {
+      _hangUp();
+    }
     _localRenderer.dispose();
-    _remoteRenderer.dispose();
-    super.dispose();
+    navigator.mediaDevices.ondevicechange = null;
   }
 
-  final Map<String, dynamic> mediaConstraints = {
-    "audio": true,
-    //"video": true,
-    "video": {
-      "mandatory": {
-        "minWidth":
-            '1280', // Provide your own width, height and frame rate here
-        "minHeight": '720',
-        "minFrameRate": '30',
-      },
-      "facingMode": "user",
-      "optional": [],
+  void initRenderers() async {
+    await _localRenderer.initialize();
+  }
+
+  // Platform messages are asynchronous, so we initialize in an async method.
+  void _makeCall() async {
+    final mediaConstraints = <String, dynamic>{
+      'audio': false,
+      'video': {
+        'mandatory': {
+          'minWidth':
+              '640', // Provide your own width, height and frame rate here
+          'minHeight': '480',
+          'minFrameRate': '30',
+        },
+        'facingMode': 'user',
+        'optional': [],
+      }
+    };
+
+    try {
+      var stream = await navigator.mediaDevices.getUserMedia(mediaConstraints);
+      _mediaDevicesList = await navigator.mediaDevices.enumerateDevices();
+      _localStream = stream;
+      _localRenderer.srcObject = _localStream;
+    } catch (e) {
+      print(e.toString());
     }
-  };
+    if (!mounted) return;
+
+    setState(() {
+      _inCalling = true;
+    });
+  }
+
+  void _hangUp() async {
+    try {
+      if (kIsWeb) {
+        _localStream?.getTracks().forEach((track) => track.stop());
+      }
+      await _localStream?.dispose();
+      _localRenderer.srcObject = null;
+      setState(() {
+        _inCalling = false;
+      });
+    } catch (e) {
+      print(e.toString());
+    }
+  }
+
+  void _startRecording() async {
+    if (_localStream == null) throw Exception('Stream is not initialized');
+    if (Platform.isIOS) {
+      print('Recording is not available on iOS');
+      return;
+    }
+    // TODO(rostopira): request write storage permission
+    final storagePath = await getExternalStorageDirectory();
+    if (storagePath == null) throw Exception('Can\'t find storagePath');
+
+    final filePath = storagePath.path + '/webrtc_sample/test.mp4';
+    _mediaRecorder = MediaRecorder();
+    setState(() {});
+
+    final videoTrack = _localStream!
+        .getVideoTracks()
+        .firstWhere((track) => track.kind == 'video');
+    await _mediaRecorder!.start(
+      filePath,
+      videoTrack: videoTrack,
+    );
+  }
+
+  void _stopRecording() async {
+    await _mediaRecorder?.stop();
+    setState(() {
+      _mediaRecorder = null;
+    });
+  }
+
+  void _toggleTorch() async {
+    if (_localStream == null) throw Exception('Stream is not initialized');
+
+    final videoTrack = _localStream!
+        .getVideoTracks()
+        .firstWhere((track) => track.kind == 'video');
+    final has = await videoTrack.hasTorch();
+    if (has) {
+      print('[TORCH] Current camera supports torch mode');
+      setState(() => _isTorchOn = !_isTorchOn);
+      await videoTrack.setTorch(_isTorchOn);
+      print('[TORCH] Torch state is now ${_isTorchOn ? 'on' : 'off'}');
+    } else {
+      print('[TORCH] Current camera does not support torch mode');
+    }
+  }
+
+  void _toggleCamera() async {
+    if (_localStream == null) throw Exception('Stream is not initialized');
+
+    final videoTrack = _localStream!
+        .getVideoTracks()
+        .firstWhere((track) => track.kind == 'video');
+    await Helper.switchCamera(videoTrack);
+  }
+
+  void _captureFrame() async {
+    if (_localStream == null) throw Exception('Stream is not initialized');
+
+    final videoTrack = _localStream!
+        .getVideoTracks()
+        .firstWhere((track) => track.kind == 'video');
+    final frame = await videoTrack.captureFrame();
+    await showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+              content:
+                  Image.memory(frame.asUint8List(), height: 720, width: 1280),
+              actions: <Widget>[
+                TextButton(
+                  onPressed: Navigator.of(context, rootNavigator: true).pop,
+                  child: Text('OK'),
+                )
+              ],
+            ));
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: Text("Welcome to Flutter Explained - WebRTC"),
+        title: Text('GetUserMedia API Test'),
+        actions: _inCalling
+            ? <Widget>[
+                IconButton(
+                  icon: Icon(_isTorchOn ? Icons.flash_off : Icons.flash_on),
+                  onPressed: _toggleTorch,
+                ),
+                IconButton(
+                  icon: Icon(Icons.switch_video),
+                  onPressed: _toggleCamera,
+                ),
+                IconButton(
+                  icon: Icon(Icons.camera),
+                  onPressed: _captureFrame,
+                ),
+                IconButton(
+                  icon: Icon(_isRec ? Icons.stop : Icons.fiber_manual_record),
+                  onPressed: _isRec ? _stopRecording : _startRecording,
+                ),
+                PopupMenuButton<String>(
+                  onSelected: _selectAudioOutput,
+                  itemBuilder: (BuildContext context) {
+                    if (_mediaDevicesList != null) {
+                      return _mediaDevicesList!
+                          .where((device) => device.kind == 'audiooutput')
+                          .map((device) {
+                        return PopupMenuItem<String>(
+                          value: device.deviceId,
+                          child: Text(device.label),
+                        );
+                      }).toList();
+                    }
+                    return [];
+                  },
+                ),
+              ]
+            : null,
       ),
-      body: SingleChildScrollView(
-        child: Column(
-          children: [
-            SizedBox(height: 8),
-            ElevatedButton(
-              onPressed: () async {
-                //signaling.openUserMedia(_localRenderer, _remoteRenderer);
-                //signaling.openUserMedia(_localRenderer);
-                MediaStream _localstream =
-                    await navigator.getUserMedia(mediaConstraints);
-
-                _localRenderer.srcObject = _localstream;
-              },
-              child: Text("Open camera & microphone"),
+      body: OrientationBuilder(
+        builder: (context, orientation) {
+          return Center(
+            child: Container(
+              margin: EdgeInsets.fromLTRB(0.0, 0.0, 0.0, 0.0),
+              width: MediaQuery.of(context).size.width,
+              height: MediaQuery.of(context).size.height,
+              decoration: BoxDecoration(color: Colors.black54),
+              child: RTCVideoView(_localRenderer, mirror: true),
             ),
-            SizedBox(
-              width: 8,
-            ),
-            ElevatedButton(
-              onPressed: () async {
-                // roomId = await signaling.createRoom(_remoteRenderer);
-                // textEditingController.text = roomId!;
-                // setState(() {});
-              },
-              child: Text("Create room"),
-            ),
-            SizedBox(
-              width: 8,
-            ),
-            ElevatedButton(
-              onPressed: () {
-                // Add roomId
-                // signaling.joinRoom(
-                //   textEditingController.text,
-                //   _remoteRenderer,
-                // );
-              },
-              child: Text("Join room"),
-            ),
-            SizedBox(
-              width: 8,
-            ),
-            ElevatedButton(
-              onPressed: () {
-                //signaling.hangUp(_localRenderer);
-              },
-              child: Text("Hangup"),
-            ),
-            SizedBox(height: 8),
-            Container(
-              color: Colors.amber,
-              margin: EdgeInsets.all(9),
-              width: 150.0,
-              height: 200.0,
-              child: RTCVideoView(_localRenderer),
-            ),
-
-            // Expanded(
-            //   child: Padding(
-            //     padding: const EdgeInsets.all(8.0),
-            //     child: Row(
-            //       mainAxisAlignment: MainAxisAlignment.center,
-            //       children: [
-            //         Expanded(child: RTCVideoView(_localRenderer, mirror: true)),
-            //         //Expanded(child: RTCVideoView(_remoteRenderer)),
-            //       ],
-            //     ),
-            //   ),
-            // ),
-            Padding(
-              padding: const EdgeInsets.all(8.0),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text("Join the following Room: "),
-                  Flexible(
-                    child: TextFormField(
-                      controller: textEditingController,
-                    ),
-                  )
-                ],
-              ),
-            ),
-            SizedBox(height: 8)
-          ],
-        ),
+          );
+        },
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _inCalling ? _hangUp : _makeCall,
+        tooltip: _inCalling ? 'Hangup' : 'Call',
+        child: Icon(_inCalling ? Icons.call_end : Icons.phone),
       ),
     );
+  }
+
+  void _selectAudioOutput(String deviceId) {
+    _localRenderer.audioOutput(deviceId);
   }
 }
