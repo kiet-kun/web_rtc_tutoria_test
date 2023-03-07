@@ -104,6 +104,11 @@ class _MeetingScreenState extends State<MeetingScreen> {
       });
     });
 
+    final mediaStream = await navigator.mediaDevices
+        .getUserMedia({"video": isVideo, "audio": isAudio});
+    _mediaDevicesList = await navigator.mediaDevices.enumerateDevices();
+    _localStream = mediaStream;
+
     peer.on<MediaConnection>("call").listen((call) async {
       // final mediaConstraints = <String, dynamic>{
       //   'audio': isAudio,
@@ -136,8 +141,8 @@ class _MeetingScreenState extends State<MeetingScreen> {
       //   };
       // }
 
-      final mediaStream = await navigator.mediaDevices
-          .getUserMedia({"video": isVideo, "audio": isAudio});
+      // final mediaStream = await navigator.mediaDevices
+      //     .getUserMedia({"video": isVideo, "audio": isAudio});
 
       // final mediaStream =
       //     await navigator.mediaDevices.getUserMedia(mediaConstraints);
